@@ -1,0 +1,79 @@
+import typer
+from urllib.parse import urlparse
+from pathlib import Path
+from typing import Optional
+
+app = typer.Typer()
+
+
+def validate_url(url: str) -> str:
+    """Validate that the URL is properly formatted."""
+    try:
+        result = urlparse(url)
+        if not result.scheme:
+            raise ValueError("URL must include a scheme (http/https)")
+        if not result.netloc:
+            raise ValueError("URL must include a domain")
+        if result.scheme not in ["http", "https"]:
+            raise ValueError("Only HTTP and HTTPS schemes are supported")
+        return url
+    except Exception as e:
+        raise typer.BadParameter(f"Invalid URL: {str(e)}")
+
+
+def validate_depth(depth: int) -> int:
+    """Validate that depth is a non-negative integer."""
+    if depth < 0:
+        raise typer.BadParameter("Depth must be >= 0")
+    if depth > 10:
+        raise typer.BadParameter("Depth must be <= 10 (too deep)")
+    return depth
+
+
+def validate_output(output: Optional[str]) -> Optional[Path]:
+    """Validate and return output file path."""
+    if not output:
+        return None
+
+    try:
+        output_path = Path(output)
+        # Check if parent directory exists
+        if not output_path.parent.exists():
+            raise typer.BadParameter(
+                f"Output directory does not exist: {output_path.parent}"
+            )
+        return output_path
+    except Exception as e:
+        raise typer.BadParameter(f"Invalid output path: {str(e)}")
+
+
+@app.command()
+def main(
+    url: str = typer.Argument(..., help="URL to crawl"),
+    depth: int = typer.Option(0, help="Maximum crawl depth (0-10)"),
+    output: Optional[str] = typer.Option(None, help="Output file path"),
+):
+    """
+    Web crawler CLI - crawl a website up to a specified depth.
+    """
+    try:
+        # Validate inputs
+        url = validate_url(url)
+        depth = validate_depth(depth)
+        output_path = validate_output(output)
+
+        # Process the crawl request
+        typer.echo(f"✓ URL: {url}")
+        typer.echo(f"✓ Depth: {depth}")
+        if output_path:
+            typer.echo(f"✓ Output: {output_path}")
+
+        typer.echo("\nCrawling started...")
+        # Crawler logic will go here
+
+    except typer.BadParameter as e:
+        typer.echo(f"✗ Validation Error: {str(e)}", err=True)
+        raise typer.Exit(code=1)
+    except Exception as e:
+        typer.echo(f"✗ Unexpected error: {str(e)}", err=True)
+        raise typer.Exit(code=1)
