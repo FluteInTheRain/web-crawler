@@ -2,6 +2,7 @@ import typer
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional
+from src.crawler import WebCrawler
 
 app = typer.Typer()
 
@@ -62,14 +63,42 @@ def main(
         depth = validate_depth(depth)
         output_path = validate_output(output)
 
-        # Process the crawl request
+        # Display configuration
         typer.echo(f"✓ URL: {url}")
         typer.echo(f"✓ Depth: {depth}")
         if output_path:
             typer.echo(f"✓ Output: {output_path}")
 
-        typer.echo("\nCrawling started...")
-        # Crawler logic will go here
+        # Initialize and run crawler
+        typer.echo("\n🕷️  Crawling started...\n")
+        crawler = WebCrawler(start_url=url, max_depth=depth)
+        results = crawler.crawl()
+
+        # Display results
+        typer.echo(f"\n📊 Crawl Results ({len(results)} URLs processed):\n")
+        for result in results:
+            status_icon = {"success": "✓", "error": "✗", "skipped": "⊘"}.get(
+                result.get("status"), "?"
+            )
+
+            url_display = result.get("url", "")
+            reason = result.get("reason", "")
+            code = result.get("code", "")
+
+            if result.get("status") == "success":
+                content_type = result.get("content_type", "")
+                typer.echo(
+                    f"{status_icon} {url_display} [{result.get('code')}] "
+                    f"({result.get('content_length')} bytes)"
+                )
+            else:
+                error_msg = reason or code or ""
+                typer.echo(f"{status_icon} {url_display} {error_msg}")
+
+        # Save results if output specified
+        if output_path:
+            crawler.save_results(output_path)
+            typer.echo(f"\n✓ Results saved to {output_path}")
 
     except typer.BadParameter as e:
         typer.echo(f"✗ Validation Error: {str(e)}", err=True)
