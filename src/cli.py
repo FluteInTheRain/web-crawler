@@ -22,15 +22,6 @@ def validate_url(url: str) -> str:
         raise typer.BadParameter(f"Invalid URL: {str(e)}")
 
 
-def validate_depth(depth: int) -> int:
-    """Validate that depth is a non-negative integer."""
-    if depth < 0:
-        raise typer.BadParameter("Depth must be >= 0")
-    if depth > 10:
-        raise typer.BadParameter("Depth must be <= 10 (too deep)")
-    return depth
-
-
 def validate_output(output: Optional[str]) -> Optional[Path]:
     """Validate and return output file path."""
     if not output:
@@ -38,7 +29,6 @@ def validate_output(output: Optional[str]) -> Optional[Path]:
 
     try:
         output_path = Path(output)
-        # Check if parent directory exists
         if not output_path.parent.exists():
             raise typer.BadParameter(
                 f"Output directory does not exist: {output_path.parent}"
@@ -50,59 +40,88 @@ def validate_output(output: Optional[str]) -> Optional[Path]:
 
 @app.command()
 def main(
-    url: str = typer.Argument(..., help="URL to crawl"),
-    depth: int = typer.Option(0, help="Maximum crawl depth (0-10)"),
-    output: Optional[str] = typer.Option(None, help="Output file path"),
+    url: str = typer.Argument(..., help="Root URL of the website to crawl"),
+    max_pages: Optional[int] = typer.Option(
+        None, help="Maximum number of pages to fetch (no limit when omitted)"
+    ),
+    output: Optional[str] = typer.Option(
+        None, help="Save all results to this JSON file"
+    ),
+    output_dir: Optional[str] = typer.Option(
+        None,
+        help="Directory to save per-page Markdown files + metadata.json index",
+    ),
 ):
     """
-    Web crawler CLI - crawl a website up to a specified depth.
+    Web crawler — discovers all pages via the site's sitemap and extracts
+    title, description, headings, and full content from each page.
+
+    Use --output-dir to save each page as a Markdown file with a
+    metadata.json index, or --output to save everything as a single JSON.
     """
     try:
-        # Validate inputs
         url = validate_url(url)
-        depth = validate_depth(depth)
         output_path = validate_output(output)
 
-        # Display configuration
-        typer.echo(f"✓ URL: {url}")
-        typer.echo(f"✓ Depth: {depth}")
+        typer.echo(f"\u2713 URL: {url}")
         if output_path:
-            typer.echo(f"✓ Output: {output_path}")
+            typer.echo(f"\u2713 Output: {output_path}")
 
-        # Initialize and run crawler
-        typer.echo("\n🕷️  Crawling started...\n")
-        crawler = WebCrawler(start_url=url, max_depth=depth)
+        typer.echo("\n\U0001f577\ufe0f  Crawling started...\n")
+        typer.echo(f"\u2713 Max pages: {max_pages if max_pages else 'no limit'}")
+        crawler = WebCrawler(root_url=url, max_pages=max_pages)
         results = crawler.crawl()
 
-        # Display results
-        typer.echo(f"\n📊 Crawl Results ({len(results)} URLs processed):\n")
+        # ---- Summary ----
+        success = [r for r in results if r.get("status") == "success"]
+        errors = [r for r in results if r.get("status") == "error"]
+        skipped = [r for r in results if r.get("status") == "skipped"]
+
+        typer.echo(
+            f"\n\U0001f4ca Results: {len(results)} pages processed "
+            f"({len(success)} OK, {len(errors)} errors, {len(skipped)} skipped)\n"
+        )
+
         for result in results:
-            status_icon = {"success": "✓", "error": "✗", "skipped": "⊘"}.get(
-                result.get("status"), "?"
+            status = result.get("status", "?")
+            icon = {"success": "\u2713", "error": "\u2717", "skipped": "\u2298"}.get(
+                status, "?"
             )
-
             url_display = result.get("url", "")
-            reason = result.get("reason", "")
-            code = result.get("code", "")
 
-            if result.get("status") == "success":
-                content_type = result.get("content_type", "")
+            if status == "success":
+                title = result.get("title") or "(no title)"
+                desc = result.get("description") or ""
+                h1s = result.get("headings", {}).get("h1", [])
+                size = result.get("content_length", 0)
                 typer.echo(
-                    f"{status_icon} {url_display} [{result.get('code')}] "
-                    f"({result.get('content_length')} bytes)"
+                    f"{icon} {url_display} [{result.get('code')}] ({size} bytes)"
                 )
+                typer.echo(f"   Title      : {title}")
+                if desc:
+                    typer.echo(f"   Description: {desc[:120]}")
+                if h1s:
+                    typer.echo(f"   H1         : {h1s[0]}")
             else:
-                error_msg = reason or code or ""
-                typer.echo(f"{status_icon} {url_display} {error_msg}")
+                reason = result.get("reason") or result.get("code") or ""
+                typer.echo(f"{icon} {url_display} — {reason}")
 
-        # Save results if output specified
         if output_path:
             crawler.save_results(output_path)
-            typer.echo(f"\n✓ Results saved to {output_path}")
+            typer.echo(f"\n\u2713 Results saved to {output_path}")
+
+        if output_dir:
+            out = Path(output_dir)
+            metadata = crawler.save_as_markdown_dir(out)
+            success_count = sum(1 for m in metadata if m["status"] == "success")
+            typer.echo(
+                f"\n\u2713 Saved {success_count} Markdown file(s) + metadata.json "
+                f"to {out.resolve()}"
+            )
 
     except typer.BadParameter as e:
-        typer.echo(f"✗ Validation Error: {str(e)}", err=True)
+        typer.echo(f"\u2717 Validation Error: {str(e)}", err=True)
         raise typer.Exit(code=1)
     except Exception as e:
-        typer.echo(f"✗ Unexpected error: {str(e)}", err=True)
+        typer.echo(f"\u2717 Unexpected error: {str(e)}", err=True)
         raise typer.Exit(code=1)
