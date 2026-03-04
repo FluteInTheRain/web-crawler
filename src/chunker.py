@@ -1,87 +1,184 @@
 import json
-import uuid
 from pathlib import Path
-from transformers import AutoTokenizer
+from typing import Dict, List, Optional, Tuple
 
-# 1. Configuration - Choosing a standard RAG-friendly tokenizer
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 80  # 10% overlap for context continuity
-INPUT_METADATA = "pages/metadata.json"
-OUTPUT_CHUNKS = "./kb_chunks.json"
-
-
-def create_chunks(text, page_id):
-    # Encode the text into token IDs
-    tokens = tokenizer.encode(text, add_special_tokens=False)
-
-    chunks = []
-    chunk_index = 0
-
-    # Sliding window logic
-    for i in range(0, len(tokens), CHUNK_SIZE - CHUNK_OVERLAP):
-        # Extract the window of tokens
-        chunk_tokens = tokens[i : i + CHUNK_SIZE]
-
-        # Decode back to text (cleaning up special characters)
-        chunk_content = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
-
-        chunks.append(
-            {
-                "chunk_id": str(uuid.uuid4()),
-                "page_id": page_id,
-                "chunk_index": chunk_index,
-                "content": chunk_content,
-                "token_count": len(chunk_tokens),
-            }
-        )
-
-        chunk_index += 1
-
-        # Stop if we've reached the end of the tokens
-        if i + CHUNK_SIZE >= len(tokens):
-            break
-
-    return chunks
+from src.utils.chunk_utils import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_MIN_CHUNK_SIZE,
+    DEFAULT_MODEL_ID,
+    chunk_text,
+    load_tokenizer,
+)
+from src.utils.text_utils import clean_markdown
 
 
-def run_pipeline():
-    with open(INPUT_METADATA, "r") as f:
-        pages = json.load(f)
+# ---------------------------------------------------------------------------
+# Metadata / file I/O helpers
+# ---------------------------------------------------------------------------
 
-    all_chunks = []
 
-    # Only process pages that were successfully crawled and have a file
-    valid_pages = [
-        p for p in pages if p.get("status") == "success" and p.get("filename")
-    ]
-    skipped = len(pages) - len(valid_pages)
-    if skipped:
-        print(f"⚠️  Skipping {skipped} page(s) with errors or missing content.")
-    print(f"Starting transformation of {len(valid_pages)} pages...")
+def load_metadata(metadata_path: Path) -> List[Dict]:
+    """
+    Load a metadata.json index produced by the crawler.
 
-    for page in valid_pages:
-        # filenames in metadata are stored relative to the `pages/` directory
-        file_path = Path("pages") / Path(page["filename"])
-        if not file_path.exists():
-            print(f"⚠️ Warning: {page['filename']} not found. Skipping.")
+    :param metadata_path: Path to the metadata.json file.
+    :returns: List of page metadata dicts.
+    """
+    return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+
+def load_page_text(pages_dir: Path, filename: str) -> Optional[str]:
+    """
+    Read the Markdown file for a single page.
+
+    :param pages_dir: Directory that contains the page Markdown files.
+    :param filename: Filename from the metadata entry.
+    :returns: File text, or None when the file does not exist.
+    """
+    file_path = pages_dir / filename
+    if not file_path.exists():
+        return None
+    return file_path.read_text(encoding="utf-8")
+
+
+def is_valid_entry(entry) -> bool:
+    """
+    Return True when a metadata entry is a successfully crawled page with a filename.
+
+    :param entry: A single item from the metadata list.
+    :returns: True if the entry is processable, False otherwise.
+    """
+    return (
+        isinstance(entry, dict)
+        and entry.get("status") == "success"
+        and bool(entry.get("filename"))
+    )
+
+
+def process_entry(
+    entry: Dict,
+    pages_dir: Path,
+    tokenizer,
+    chunk_size: int,
+    chunk_overlap: int,
+    min_chunk_size: int,
+    strip_images: bool,
+    strip_links: bool,
+) -> Tuple[List[Dict], bool]:
+    """
+    Clean, tokenize, and chunk a single metadata entry.
+
+    :param entry: Metadata dict for one page.
+    :param pages_dir: Directory containing page Markdown files.
+    :param tokenizer: HuggingFace tokenizer instance.
+    :param chunk_size: Maximum tokens per chunk.
+    :param chunk_overlap: Overlap between consecutive chunks.
+    :param min_chunk_size: Minimum tokens required to keep a chunk.
+    :param strip_images: Pass-through for clean_markdown().
+    :param strip_links: Pass-through for clean_markdown().
+    :returns: Tuple of (chunks list, success flag).
+              The success flag is False when the file could not be read.
+    """
+    raw_text = load_page_text(pages_dir, entry["filename"])
+    if raw_text is None:
+        return [], False
+
+    clean_text = clean_markdown(
+        raw_text, strip_images=strip_images, strip_links=strip_links
+    )
+    chunks = chunk_text(
+        clean_text,
+        page_id=entry.get("id", ""),
+        tokenizer=tokenizer,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        min_chunk_size=min_chunk_size,
+    )
+    return chunks, True
+
+
+def save_chunks(chunks: List[Dict], output_path: Path) -> None:
+    """
+    Write the chunk list to a JSON file.
+
+    :param chunks: List of chunk dicts to persist.
+    :param output_path: Destination file path.
+    """
+    output_path.write_text(
+        json.dumps(chunks, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main knowledge-base builder
+# ---------------------------------------------------------------------------
+
+
+def build_knowledge_base(
+    metadata_path: Path = Path("pages/metadata.json"),
+    pages_dir: Path = Path("pages"),
+    output_path: Path = Path("ai_knowledge_base.json"),
+    model_id: str = DEFAULT_MODEL_ID,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    min_chunk_size: int = DEFAULT_MIN_CHUNK_SIZE,
+    strip_images: bool = True,
+    strip_links: bool = True,
+) -> List[Dict]:
+    """
+    Build a knowledge base from crawled Markdown pages.
+
+    Reads the metadata index, cleans and chunks each successfully crawled page,
+    then writes all chunks to a single JSON file.
+
+    :param metadata_path: Path to the crawler's metadata.json index.
+    :param pages_dir: Directory containing page Markdown files.
+    :param output_path: Destination path for the output JSON.
+    :param model_id: HuggingFace model ID for the tokenizer.
+    :param chunk_size: Maximum tokens per chunk.
+    :param chunk_overlap: Token overlap between consecutive chunks.
+    :param min_chunk_size: Minimum tokens to keep a chunk (except the first).
+    :param strip_images: Remove Markdown image syntax before chunking.
+    :param strip_links: Collapse Markdown link syntax to label text.
+    :returns: List of all chunk dicts written to disk.
+    """
+    tokenizer = load_tokenizer(model_id)
+    metadata = load_metadata(metadata_path)
+
+    all_chunks: List[Dict] = []
+    processed = 0
+    skipped = 0
+
+    for entry in metadata:
+        if not is_valid_entry(entry):
+            skipped += 1
             continue
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        chunks, success = process_entry(
+            entry,
+            pages_dir,
+            tokenizer,
+            chunk_size,
+            chunk_overlap,
+            min_chunk_size,
+            strip_images,
+            strip_links,
+        )
+        if not success:
+            skipped += 1
+            continue
 
-        # Transform Page -> Multiple Chunks
-        page_chunks = create_chunks(content, page["id"])
-        all_chunks.extend(page_chunks)
+        all_chunks.extend(chunks)
+        processed += 1
 
-    # Save the new AI Knowledge Base
-    with open(OUTPUT_CHUNKS, "w", encoding="utf-8") as f:
-        json.dump(all_chunks, f, indent=2, ensure_ascii=False)
-
-    print(f"Success! Created {len(all_chunks)} chunks from {len(valid_pages)} pages.")
+    save_chunks(all_chunks, output_path)
+    print(
+        f"Processed {processed} files (skipped {skipped}) "
+        f"into {len(all_chunks)} chunks."
+    )
+    return all_chunks
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    build_knowledge_base()
