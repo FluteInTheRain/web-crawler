@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# ChromaDB persistent storage
+chroma_storage/
+
+# Generated Markdown output
+out_md/
