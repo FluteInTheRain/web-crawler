@@ -1,10 +1,13 @@
-import requests
-from bs4 import BeautifulSoup
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from urllib.parse import urljoin, urlparse
-from pathlib import Path
 import uuid
-from datetime import datetime, timezone
+
+import requests
+from bs4 import BeautifulSoup
 
 try:
     import truststore
@@ -58,6 +61,7 @@ class WebCrawler:
             "header",
             "aside",
         ),
+        concurrency: int = 1,
     ):
         """
         Initialise the crawler with a root URL and tunable options.
@@ -69,6 +73,7 @@ class WebCrawler:
         :param user_agent: User-Agent header sent with every request.
         :param heading_levels: HTML heading tags to collect, e.g. ('h1', 'h2').
         :param boilerplate_tags: Tags to strip before text extraction.
+        :param concurrency: Number of worker threads for parallel page fetching.
         """
         self.root_url = root_url.rstrip("/")
         self.base_domain = normalise_domain(urlparse(root_url).netloc)
@@ -78,7 +83,9 @@ class WebCrawler:
         self.heading_levels = heading_levels
         self.boilerplate_tags = boilerplate_tags
 
+        self.concurrency = max(1, concurrency)
         self.visited: set = set()
+        self._visited_lock = threading.Lock()
         self.results: List[Dict] = []
         self.session = make_http_session(user_agent)
 
@@ -187,12 +194,16 @@ class WebCrawler:
           url, status, code, content_length,
           title, description, keywords, headings, sections, content, links.
 
+        Thread-safe: the visited check and mark are performed atomically under
+        a lock so parallel workers never fetch the same URL twice.
+
         :param url: Absolute URL of the page to fetch.
         :returns: Result dict, or None if the URL was already visited.
         """
-        if url in self.visited:
-            return None
-        self.visited.add(url)
+        with self._visited_lock:
+            if url in self.visited:
+                return None
+            self.visited.add(url)
 
         try:
             response = self.session.get(url, timeout=self.timeout, allow_redirects=True)
@@ -286,26 +297,41 @@ class WebCrawler:
 
     def _fetch_pages(self, urls: List[str]) -> List[Dict]:
         """
-        Fetch each URL in sequence, respecting max_pages if set.
+        Fetch URLs, optionally in parallel, respecting max_pages if set.
+
+        When concurrency > 1 a ThreadPoolExecutor is used; otherwise pages
+        are fetched sequentially. Progress is printed as each page completes.
 
         :param urls: Ordered list of URLs to fetch.
         :returns: List of result dicts for all fetched pages.
         """
-        results: List[Dict] = []
-        total = len(urls)
-        for i, url in enumerate(urls, start=1):
-            if (
-                self.max_pages is not None
-                and self.max_pages > 0
-                and len(results) >= self.max_pages
-            ):
-                print(f"Reached max_pages limit ({self.max_pages}) - stopping.")
-                break
+        if self.max_pages is not None and self.max_pages > 0:
+            urls = urls[: self.max_pages]
 
-            print(f"[{i}/{total}] {url}")
+        total = len(urls)
+        results: List[Dict] = []
+        print_lock = threading.Lock()
+        counter = [0]  # mutable int shared across threads
+
+        def fetch_and_report(url: str) -> Optional[Dict]:
             result = self.fetch_page(url)
-            if result:
-                results.append(result)
+            with print_lock:
+                counter[0] += 1
+                print(f"[{counter[0]}/{total}] {url}")
+            return result
+
+        if self.concurrency <= 1:
+            for url in urls:
+                result = fetch_and_report(url)
+                if result:
+                    results.append(result)
+        else:
+            with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
+                futures = {executor.submit(fetch_and_report, url): url for url in urls}
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        results.append(result)
 
         return results
 

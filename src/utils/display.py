@@ -9,7 +9,9 @@ def print_config(
     max_pages: Optional[int],
     output_path: Optional[Path],
     output_dir: Optional[Path],
+    chunks_output: Optional[Path],
     verbose: bool,
+    concurrency: int = 1,
 ) -> None:
     """
     Print the resolved crawl configuration before the crawl begins.
@@ -17,17 +19,21 @@ def print_config(
     :param url: Validated root URL.
     :param max_pages: Page limit, or None for unlimited.
     :param output_path: JSON output file path, or None.
-    :param output_dir: Markdown output directory, or None.
+    :param output_dir: Markdown output directory.
+    :param chunks_output: Destination path for the AI knowledge base chunks JSON.
     :param verbose: Whether verbose mode is active.
+    :param concurrency: Number of parallel worker threads.
     """
-    typer.echo(f"URL       : {url}")
-    typer.echo(f"Max pages : {max_pages if max_pages else 'no limit'}")
+    typer.echo(f"URL         : {url}")
+    typer.echo(f"Max pages   : {max_pages if max_pages else 'no limit'}")
+    typer.echo(f"Concurrency : {concurrency} thread{'s' if concurrency != 1 else ''}")
+    typer.echo(f"MD out      : {output_dir.resolve()}")
+    if chunks_output:
+        typer.echo(f"Chunks out  : {chunks_output}")
     if output_path:
-        typer.echo(f"JSON out  : {output_path}")
-    if output_dir:
-        typer.echo(f"MD out    : {output_dir.resolve()}")
+        typer.echo(f"JSON out    : {output_path}")
     if verbose:
-        typer.echo("Verbose   : on")
+        typer.echo("Verbose     : on")
     typer.echo("")
 
 
@@ -117,12 +123,13 @@ def save_json(crawler, output_path: Path) -> None:
     typer.echo(f"\nResults saved to {output_path}")
 
 
-def save_markdown(crawler, output_dir: Path) -> None:
+def save_markdown(crawler, output_dir: Path) -> int:
     """
     Save each successfully crawled page as a Markdown file alongside a metadata.json index.
 
     :param crawler: Finished WebCrawler instance holding results.
     :param output_dir: Directory where Markdown files and metadata.json will be written.
+    :returns: Number of successfully saved pages.
     """
     metadata = crawler.save_as_markdown_dir(output_dir)
     success_count = sum(1 for m in metadata if m["status"] == "success")
@@ -130,3 +137,14 @@ def save_markdown(crawler, output_dir: Path) -> None:
         f"\nSaved {success_count} Markdown file(s) + metadata.json "
         f"to {output_dir.resolve()}"
     )
+    return success_count
+
+
+def print_chunks_saved(chunk_count: int, output_path: Path) -> None:
+    """
+    Print a confirmation message after the knowledge-base chunks are written.
+
+    :param chunk_count: Total number of chunks written.
+    :param output_path: Path of the file that was written.
+    """
+    typer.echo(f"Chunked into {chunk_count} chunk(s) -> {output_path}")

@@ -2,6 +2,7 @@ import typer
 from pathlib import Path
 from typing import Optional
 from src.crawler import WebCrawler
+from src.chunker import build_knowledge_base
 from src.utils.validation import validate_url, validate_output_file, validate_output_dir
 from src.utils.display import (
     print_config,
@@ -9,6 +10,7 @@ from src.utils.display import (
     print_results,
     save_json,
     save_markdown,
+    print_chunks_saved,
 )
 
 app = typer.Typer()
@@ -35,10 +37,10 @@ def main(
         help="Save all results to this JSON file",
     ),
     output_dir: Optional[str] = typer.Option(
-        None,
+        "pages",
         "--output-dir",
         "-d",
-        help="Directory to save per-page Markdown files + metadata.json index",
+        help="Directory to save per-page Markdown files + metadata.json index (default: pages/)",
     ),
     verbose: bool = typer.Option(
         False,
@@ -68,23 +70,51 @@ def main(
         help="Maximum characters to display for meta descriptions (verbose mode)",
         min=10,
     ),
+    concurrency: int = typer.Option(
+        1,
+        "--concurrency",
+        "-c",
+        help="Number of parallel threads used to fetch pages",
+        min=1,
+    ),
+    chunks_output: str = typer.Option(
+        "ai_knowledge_base.json",
+        "--chunks-output",
+        help="Destination JSON file for the AI knowledge base chunks",
+    ),
+    skip_chunks: bool = typer.Option(
+        False,
+        "--skip-chunks",
+        help="Skip the chunking step after saving Markdown files",
+    ),
 ):
     """
-    Web crawler that discovers all pages via the site's sitemap and extracts
-    title, description, headings, and full content from each page.
+    Web crawler that discovers all pages via the site's sitemap, extracts
+    title, description, headings, and full content from each page, saves them
+    as Markdown files, and chunks the content into an AI knowledge base.
 
-    Use --output-dir to save each page as a Markdown file with a metadata.json
-    index, or --output to save everything as a single JSON file.
+    Markdown pages are written to --output-dir (default: pages/) and chunks
+    to --chunks-output (default: ai_knowledge_base.json) automatically.
+    Use --skip-chunks to stop after the Markdown step.
     """
     try:
         url = validate_url(url)
         output_path = validate_output_file(output)
         out_dir = validate_output_dir(output_dir)
+        chunks_path = Path(chunks_output)
 
-        print_config(url, max_pages, output_path, out_dir, verbose)
+        print_config(
+            url,
+            max_pages,
+            output_path,
+            out_dir,
+            chunks_path if not skip_chunks else None,
+            verbose,
+            concurrency,
+        )
 
         typer.echo("Crawling started...\n")
-        crawler = WebCrawler(root_url=url, max_pages=max_pages)
+        crawler = WebCrawler(root_url=url, max_pages=max_pages, concurrency=concurrency)
         results = crawler.crawl()
 
         print_summary(results)
@@ -103,6 +133,15 @@ def main(
 
         if out_dir:
             save_markdown(crawler, out_dir)
+
+            if not skip_chunks:
+                typer.echo("\nBuilding AI knowledge base...")
+                chunks = build_knowledge_base(
+                    metadata_path=out_dir / "metadata.json",
+                    pages_dir=out_dir,
+                    output_path=chunks_path,
+                )
+                print_chunks_saved(len(chunks), chunks_path)
 
     except typer.BadParameter as e:
         typer.echo(f"Validation Error: {str(e)}", err=True)
