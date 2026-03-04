@@ -501,9 +501,13 @@ class WebCrawler:
         crawled_at = datetime.now(timezone.utc).isoformat()
 
         for item in self.results:
+            # Only persist pages that were successfully fetched and have content
+            status = item.get("status", "")
+            if status != "success":
+                continue
+
             page_id = str(uuid.uuid4())
             url = item.get("url", "")
-            status = item.get("status", "")
 
             # Build a unique filename
             stem = self._sanitize_filename(url)
@@ -514,7 +518,7 @@ class WebCrawler:
 
             meta_entry: Dict = {
                 "id": page_id,
-                "filename": filename if status == "success" else None,
+                "filename": filename,
                 "url": url,
                 "title": item.get("title"),
                 "description": item.get("description"),
@@ -524,9 +528,6 @@ class WebCrawler:
                 "content_length": item.get("content_length"),
             }
             metadata.append(meta_entry)
-
-            if status != "success":
-                continue
 
             # ---- Write Markdown file ----
             title = item.get("title") or url
