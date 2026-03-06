@@ -1,91 +1,94 @@
-#####
+"""
+RAG engine — retrieve chunks from Qdrant and generate answers via OpenAI.
 
-import json
+Public API
+----------
+create_rag_engine(n_results, model) -> Callable[[str, int], dict]
+    Returns an ``answer(question, n_results)`` callable.
+    Result dict::
+
+        {
+            "answer":  "<cited answer text>",
+            "sources": [{"title": "...", "url": "..."}, ...]
+        }
+
+No local files are needed at query time — url/title come from the Qdrant
+payload, making the Render deployment fully self-contained.
+"""
+
 import os
-import chromadb
+
 from openai import OpenAI
-from chromadb.utils import embedding_functions
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# 1. Setup
-client = chromadb.PersistentClient(path="./chroma_storage")
-huggingface_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="all-MiniLM-L6-v2"
-)
-collection = client.get_collection(
-    name="ai_knowledge_base", embedding_function=huggingface_ef
-)
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise RuntimeError(
-        "OPENAI_API_KEY environment variable is not set. Please set it before running the RAG engine."
-    )
-
-ai_client = OpenAI(api_key=api_key)
-
-# Load your original metadata into a lookup table for speed
-with open("out_md/metadata.json", "r") as f:
-    raw_metadata = json.load(f)
-    # Create a quick-access map: { "page_uuid": {"url": "...", "title": "..."} }
-    metadata_lookup = {item["id"]: item for item in raw_metadata}
+from config import LLM_MODEL, OPENAI_API_KEY
+from src.vector_db import search as vector_search
 
 
-def get_answer_with_citations(user_query):
-    # STEP 1: Semantic Retrieval
-    results = collection.query(query_texts=[user_query], n_results=4)
-
-    # STEP 2: Build the Context with Source Keys
-    context_str = ""
-    sources_used = {}
-
-    for i, (doc, meta) in enumerate(
-        zip(results["documents"][0], results["metadatas"][0])
-    ):
-        source_id = i + 1
-        page_id = meta["page_id"]
-        source_info = metadata_lookup.get(
-            page_id, {"url": "Unknown", "title": "Unknown"}
-        )
-
-        # Store for the final reference list
-        sources_used[source_id] = source_info
-
-        # Format the context for the LLM
-        context_str += (
-            f"\nSource [{source_id}] (Title: {source_info['title']}):\n{doc}\n"
-        )
-
-    # STEP 3: The Prompt
-    system_prompt = """
-    You are a professional researcher. Use the [CONTEXT] to answer the user's question.
-    CRITICAL RULE: You MUST cite your sources using square brackets, e.g., [1] or [1][3].
-    Place the citations at the end of the sentences they support.
-    If the context doesn't contain the answer, state that clearly.
+def create_rag_engine(n_results: int = 4, model: str | None = None):
     """
+    Build and return a question-answering callable.
 
-    user_prompt = f"[CONTEXT]{context_str}\n\n[QUESTION]{user_query}"
+    :param n_results: Default number of chunks to retrieve per question.
+    :param model: OpenAI model; falls back to ``LLM_MODEL`` from config.
+    :returns: ``answer(question, n_results) -> dict`` callable.
+    """
+    api_key = OPENAI_API_KEY or os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. "
+            "Add it to your .env file or export it as an environment variable."
+        )
 
-    # STEP 4: Generate
-    response = ai_client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0,
-    )
+    llm_model = model or LLM_MODEL
+    ai_client = OpenAI(api_key=api_key)
 
-    answer = response.choices[0].message.content
+    def answer(user_query: str, n_results: int = n_results) -> dict:
+        """
+        Retrieve relevant chunks from Qdrant and generate a cited answer.
 
-    # STEP 5: Append the "Bibliography"
-    answer += "\n\nSOURCES:"
-    for sid, info in sources_used.items():
-        answer += f"\n[{sid}] {info['title']} - {info['url']}"
+        :param user_query: The user's natural-language question.
+        :param n_results:  Number of chunks to retrieve (overrides the default).
+        :returns: Dict with ``answer`` (str) and ``sources`` (list of dicts).
+        """
+        # 1. Semantic retrieval — url/title come from the Qdrant payload
+        hits = vector_search(user_query, n_results=n_results)
+
+        # 2. Build context + source list
+        context_str = ""
+        sources: list[dict] = []
+        for i, hit in enumerate(hits):
+            sid = i + 1
+            sources.append({"title": hit["title"], "url": hit["url"]})
+            context_str += (
+                f"\nSource [{sid}] (Title: {hit['title']}):\n{hit['content']}\n"
+            )
+
+        # 3. Prompt
+        system_prompt = (
+            "You are a professional researcher. "
+            "Use the [CONTEXT] to answer the user's question.\n"
+            "CRITICAL RULE: You MUST cite your sources using square brackets, "
+            "e.g. [1] or [1][3]. Place citations at the end of the sentences "
+            "they support. If the context doesn't contain the answer, say so."
+        )
+        user_prompt = f"[CONTEXT]{context_str}\n\n[QUESTION]{user_query}"
+
+        # 4. Generate
+        response = ai_client.chat.completions.create(
+            model=llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+        )
+        answer_text = response.choices[0].message.content
+
+        # 5. Append bibliography
+        answer_text += "\n\nSOURCES:"
+        for idx, src in enumerate(sources, 1):
+            answer_text += f"\n[{idx}] {src['title']} — {src['url']}"
+
+        return {"answer": answer_text, "sources": sources}
 
     return answer
-
-
-print(get_answer_with_citations("How do I build a profile page?"))

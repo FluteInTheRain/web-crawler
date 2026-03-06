@@ -1,0 +1,40 @@
+name: Daily Ingestion
+
+on:
+  # Runs every day at 03:00 UTC — adjust the cron string as needed
+  schedule:
+    - cron: "0 3 * * *"
+  # Allows you to trigger this manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    name: Crawl → Chunk → Load
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run ingestion pipeline
+        env:
+          TARGET_URL:    ${{ secrets.TARGET_URL }}
+          QDRANT_URL:    ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          # OPENAI_API_KEY is NOT needed for ingestion (crawl + chunk + load only)
+          CONCURRENCY:   "5"
+        run: python main.py ingest --quiet
+
+      - name: Report success
+        if: success()
+        run: echo "Ingestion completed successfully at $(date -u)"

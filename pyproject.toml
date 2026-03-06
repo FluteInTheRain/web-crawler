@@ -1,12 +1,29 @@
 [project]
 name = "web-crawler"
 version = "0.1.0"
-description = "Add your description here"
+description = "Web crawler + RAG knowledge-base toolkit"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # --- web crawling ---
     "beautifulsoup4>=4.12.0",
     "requests>=2.32.5",
     "truststore>=0.9.1",
+    # --- CLI ---
     "typer>=0.24.1",
+    # --- AI / embeddings ---
+    "openai>=1.0.0",
+    "qdrant-client>=1.9.0",
+    "sentence-transformers>=3.0.0",
+    "transformers>=4.40.0",
+    "tokenizers>=0.19.0",
+    # --- query API ---
+    "fastapi>=0.111.0",
+    "uvicorn>=0.29.0",
+    # --- config ---
+    "python-dotenv>=1.0.0",
 ]
+
+[project.scripts]
+# Run the full CLI:  web-crawler ingest   /   web-crawler query
+web-crawler = "main:app"

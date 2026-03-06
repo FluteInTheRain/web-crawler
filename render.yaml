@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: web-crawler-query-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: uvicorn src.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+
+    envVars:
+      # Set these in the Render dashboard → Environment (mark as secret)
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+
+      # Non-secret defaults — change here if you rename things
+      - key: COLLECTION_NAME
+        value: ai_knowledge_base
+      - key: EMBEDDING_MODEL
+        value: all-MiniLM-L6-v2
+      - key: LLM_MODEL
+        value: gpt-4o

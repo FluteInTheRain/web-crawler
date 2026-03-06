@@ -112,17 +112,6 @@ def print_results(
         typer.echo(format_result_line(result, verbose=verbose, desc_length=desc_length))
 
 
-def save_json(crawler, output_path: Path) -> None:
-    """
-    Persist all crawl results to a single JSON file.
-
-    :param crawler: Finished WebCrawler instance holding results.
-    :param output_path: Destination file path for the JSON output.
-    """
-    crawler.save_results(output_path)
-    typer.echo(f"\nResults saved to {output_path}")
-
-
 def save_markdown(crawler, output_dir: Path) -> int:
     """
     Save each successfully crawled page as a Markdown file alongside a metadata.json index.

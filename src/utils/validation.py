@@ -26,30 +26,6 @@ def validate_url(url: str) -> str:
         raise typer.BadParameter(f"Invalid URL: {str(e)}")
 
 
-def validate_output_file(output: Optional[str]) -> Optional[Path]:
-    """
-    Validate an output file path and ensure its parent directory exists.
-
-    :param output: Raw path string provided by the user, or None to skip.
-    :returns: Resolved Path object, or None when no path was supplied.
-    :raises typer.BadParameter: When the parent directory does not exist.
-    """
-    if not output:
-        return None
-
-    try:
-        output_path = Path(output)
-        if not output_path.parent.exists():
-            raise typer.BadParameter(
-                f"Output directory does not exist: {output_path.parent}"
-            )
-        return output_path
-    except typer.BadParameter:
-        raise
-    except Exception as e:
-        raise typer.BadParameter(f"Invalid output path: {str(e)}")
-
-
 def validate_output_dir(output_dir: Optional[str]) -> Optional[Path]:
     """
     Validate and resolve a directory path for Markdown output.
