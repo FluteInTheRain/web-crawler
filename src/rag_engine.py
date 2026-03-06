@@ -6,6 +6,10 @@ import chromadb
 from openai import OpenAI
 from chromadb.utils import embedding_functions
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # 1. Setup
 client = chromadb.PersistentClient(path="./chroma_storage")
 huggingface_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -42,7 +46,6 @@ def get_answer_with_citations(user_query):
     ):
         source_id = i + 1
         page_id = meta["page_id"]
-        print(page_id)
         source_info = metadata_lookup.get(
             page_id, {"url": "Unknown", "title": "Unknown"}
         )

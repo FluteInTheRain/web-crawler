@@ -14,3 +14,4 @@ chroma_storage/
 
 # Generated Markdown output
 out_md/
+.env
