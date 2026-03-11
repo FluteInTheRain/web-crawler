@@ -104,9 +104,9 @@ def search(query_text: str, n_results: int = 4) -> list[dict]:
     encoder = _encoder()
     query_vector = encoder.encode([query_text])[0].tolist()
 
-    hits = client.search(
+    results = client.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=query_vector,
+        query=query_vector,
         limit=n_results,
         with_payload=True,
     )
@@ -119,5 +119,5 @@ def search(query_text: str, n_results: int = 4) -> list[dict]:
             "title": h.payload.get("title", "Unknown"),
             "score": h.score,
         }
-        for h in hits
+        for h in results.points
     ]
